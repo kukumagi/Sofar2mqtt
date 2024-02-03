@@ -1,0 +1,1 @@
+To update the firmware on the newer model you only need the ESP32-C3 binary file using the web interface on the current running software. I you might happen to brick the system, then please check the "flashing.png" to recover your module using https://espressif.github.io/esptool-js/

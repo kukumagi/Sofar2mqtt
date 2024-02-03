@@ -51,11 +51,11 @@ HTTPUpdateServer httpUpdater;
 #define WIFI_RETRIES 6 // try again if fails for x times. Default 1.
 
 // * To be filled with EEPROM data
-char deviceName[64] = "Sofar";
-char MQTT_HOST[64] = "";
+char deviceName[65] = "Sofar";
+char MQTT_HOST[65] = "";
 char MQTT_PORT[6]  = "1883";
-char MQTT_USER[32] = "";
-char MQTT_PASS[32] = "";
+char MQTT_USER[65] = "";
+char MQTT_PASS[65] = "";
 #define MQTTRECONNECTTIMER 30000 //it takes 30 secs for each mqtt server reconnect attempt
 unsigned long lastMqttReconnectAttempt = 0;
 
@@ -65,7 +65,7 @@ unsigned long lastMqttReconnectAttempt = 0;
 
 #define MAX_POWER		3000 //only used in peakshaving now
 
-#define RS485_TRIES 8       // x 50mS to wait for RS485 input chars.
+#define RS485_TRIES 40       // x 10mS to wait for RS485 input chars.
 
 char jsonstring[1000];
 
@@ -103,6 +103,12 @@ unsigned int INVERTER_RUNNINGSTATE;
 bool BATTERYSAVE = false;
 // Peakshaving will allow the inverter to charge or discharge the battery depending on a limited export or import power value, everything above will be go to or from battery
 bool PEAKSHAVING = false;
+// Selfusemode will allow the inverter to charge or discharge the battery depending on self usage (just like auto mode)
+bool SELFUSEMODE = false;
+
+//for HYDV2 there is possiblity for more than 1 battery connection, for now we only check for 2nd battery. Need to adapt later. This boolean is to show if this 2nd battery is detected (if there is battery voltage)
+bool battery2Installed = false;
+
 
 // This is the return object for the sendModbus() function. Since we are a modbus master, we
 // are primarily interested in the responses to our commands.
@@ -111,6 +117,8 @@ struct modbusResponse
   uint8_t errorLevel;
   uint8_t data[MAX_FRAME_SIZE];
   uint8_t dataSize;
+  uint8_t frame[MAX_FRAME_SIZE];
+  uint8_t frameSize;  
   char* errorMessage;
 };
 
@@ -190,7 +198,7 @@ bool modbusError = true;
 #define SOFAR2_REG_PVW   0x05C4
 //Battery input (0x0600-0x067F)
 #define SOFAR2_BAT_BEGIN 0x0604
-#define SOFAR2_BAT_END 0x060A
+#define SOFAR2_BAT_END 0x0611
 #define SOFAR2_REG_BATTV   0x0604
 #define SOFAR2_REG_BATTA   0x0605
 #define SOFAR2_REG_BATTW   0x0606
@@ -198,6 +206,13 @@ bool modbusError = true;
 #define SOFAR2_REG_BATTSOC 0x0608
 #define SOFAR2_REG_BATTSOH 0x0609
 #define SOFAR2_REG_BATTCYC 0x060A
+#define SOFAR2_REG_BATT2V   0x060B
+#define SOFAR2_REG_BATT2A   0x060C
+#define SOFAR2_REG_BATT2W   0x060D
+#define SOFAR2_REG_BATT2TEMP  0x060E
+#define SOFAR2_REG_BATT2SOC 0x060F
+#define SOFAR2_REG_BATT2SOH 0x0610
+#define SOFAR2_REG_BATT2CYC 0x0611
 //Electric  Power (0x0680-0x06BF)
 #define SOFAR2_POW_BEGIN 0x0684
 #define SOFAR2_POW_END 0x069B //one more because of 32bit value stored
@@ -324,6 +339,13 @@ static struct mqtt_status_register  mqtt_status_reads[] =
   { HYDV2, SOFAR2_REG_BATTSOC, "batterySOC", U16, NOCALC },
   { HYDV2, SOFAR2_REG_BATTSOH, "batterySOH", U16, NOCALC },
   { HYDV2, SOFAR2_REG_BATTCYC, "battery_cycles", U16, NOCALC },
+  { HYDV2, SOFAR2_REG_BATT2V, "battery2_voltage", U16, DIV10 },
+  { HYDV2, SOFAR2_REG_BATT2A, "battery2_current", S16, DIV100 },
+  { HYDV2, SOFAR2_REG_BATT2W, "battery2_power", S16, MUL10 },
+  { HYDV2, SOFAR2_REG_BATT2TEMP, "battery2_temp", S16, NOCALC },
+  { HYDV2, SOFAR2_REG_BATT2SOC, "battery2SOC", U16, NOCALC },
+  { HYDV2, SOFAR2_REG_BATT2SOH, "battery2SOH", U16, NOCALC },
+  { HYDV2, SOFAR2_REG_BATT2CYC, "battery2_cycles", U16, NOCALC },
   { HYDV2, SOFAR2_REG_PVDAY, "today_generation", U32, DIV100 },
   { HYDV2, SOFAR2_REG_PVTOTAL, "total_generation", U32, DIV10 },
   { HYDV2, SOFAR2_REG_LOADDAY, "today_consumption", U32, DIV100 },
@@ -346,6 +368,7 @@ static struct mqtt_status_register  mqtt_status_reads[] =
 #define SEND_INTERVAL 10000
 #define BATTERYSAVE_INTERVAL 3000
 #define PEAKSHAVING_INTERVAL 3000
+#define SELFUSE_INTERVAL 3000
 
 // Wemos OLED Shield set up. 64x48, pins D1 and D2
 #include <SPI.h>
@@ -588,6 +611,7 @@ void setup_wifi()
   WiFiManagerParameter CUSTOM_MQTT_USER("user", "MQTT user",     MQTT_USER, 32);
   WiFiManagerParameter CUSTOM_MQTT_PASS("pass", "MQTT pass",     MQTT_PASS, 32);
 
+#if defined(ESP8266)
   const char *bufferStr = R"(
   <br/>
   <p>Select LCD screen type:</p>
@@ -667,8 +691,67 @@ void setup_wifi()
   document.getElementById('key_custom_mode').hidden = true;
   </script>
   )";
+#elif defined(ESP32)
+  const char *bufferStr = R"(
+  <br/>
+  <p>Select inverter type:</p>
+  <input style='display: inline-block;' type='radio' id='ME3000' name='inverter_selection' onclick='setHiddenValueInverter()'>
+  <label for='ME3000'>ME3000SP</label><br/>
+  <input style='display: inline-block;' type='radio' id='HYBRID' name='inverter_selection' onclick='setHiddenValueInverter()'>
+  <label for='HYBRID'>HYDxxxxES</label><br/>
+  <input style='display: inline-block;' type='radio' id='HYDV2' name='inverter_selection' onclick='setHiddenValueInverter()'>
+  <label for='HYDV2'>HYD EP/KTL</label><br/>  
+  <br/>
+  <p>Select data mode:</p>
+  <input style='display: inline-block;' type='radio' id='RAW' name='mode_selection' onclick='setHiddenValueMode()'>
+  <label for='RAW'>Raw data</label><br/>
+  <input style='display: inline-block;' type='radio' id='CALCULATED' name='mode_selection' onclick='setHiddenValueMode()'>
+  <label for='CALCULATED'>Calculated data</label><br/>
+  <br/>
+  <script>
+  function setHiddenValueInverter() {
+    var checkBoxME3000 = document.getElementById('ME3000');
+    var hiddenvalue = document.getElementById('key_custom_inverter');
+    if (checkBoxME3000.checked == true){
+      hiddenvalue.value=0
+    } else {
+      var checkBoxHYBRID = document.getElementById('HYBRID');
+       if (checkBoxME3000.checked == true){
+         hiddenvalue.value=1 
+       } else {
+         hiddenvalue.value=2 
+       }
+      
+    }
+  }
+  function setHiddenValueMode() {
+    var checkBox = document.getElementById('RAW');
+    var hiddenvalue = document.getElementById('key_custom_mode');
+    if (checkBox.checked == true){
+      hiddenvalue.value=0
+    } else {
+      hiddenvalue.value=1
+    }
+  }
+  if (document.getElementById("key_custom_inverter").value === "1") {
+    document.getElementById("HYBRID").checked = true  
+  } else {
+    document.getElementById("ME3000").checked = true  
+  }
+  document.querySelector("[for='key_custom_inverter']").hidden = true;
+  document.getElementById('key_custom_inverter').hidden = true;
+  if (document.getElementById("key_custom_mode").value === "1") {
+    document.getElementById("CALCULATED").checked = true  
+  } else {
+    document.getElementById("RAW").checked = true  
+  }
+  document.querySelector("[for='key_custom_mode']").hidden = true;
+  document.getElementById('key_custom_mode').hidden = true;
+  </script>
+  )";
+#endif
   WiFiManagerParameter custom_html_inputs(bufferStr);
-#if defined(ESP8266)
+#if defined(ESP8266)  
   char lcdModelString[6];
   sprintf(lcdModelString, "%u", uint8_t(tftModel));
   WiFiManagerParameter custom_hidden_lcd("key_custom_lcd", "LCD type hidden", lcdModelString, 2);
@@ -684,18 +767,18 @@ void setup_wifi()
   wifiManager.setAPCallback(configModeCallback);
   wifiManager.setConfigPortalTimeout(PORTAL_TIMEOUT);
   wifiManager.setSaveConfigCallback(save_wifi_config_callback);
+
+  wifiManager.addParameter(&CUSTOM_MY_HOST);
+  wifiManager.addParameter(&CUSTOM_MQTT_HOST);
+  wifiManager.addParameter(&CUSTOM_MQTT_PORT);
+  wifiManager.addParameter(&CUSTOM_MQTT_USER);
+  wifiManager.addParameter(&CUSTOM_MQTT_PASS);
 #if defined(ESP8266)
   wifiManager.addParameter(&custom_hidden_lcd);
 #endif
   wifiManager.addParameter(&custom_hidden_inverter);
   wifiManager.addParameter(&custom_hidden_mode);
   wifiManager.addParameter(&custom_html_inputs);
-  wifiManager.addParameter(&CUSTOM_MY_HOST);
-  wifiManager.addParameter(&CUSTOM_MQTT_HOST);
-  wifiManager.addParameter(&CUSTOM_MQTT_PORT);
-  wifiManager.addParameter(&CUSTOM_MQTT_USER);
-  wifiManager.addParameter(&CUSTOM_MQTT_PASS);
-
 
   wifiManager.setConnectTimeout(WIFI_TIMEOUT);
   wifiManager.setConnectRetries(WIFI_RETRIES);
@@ -980,7 +1063,18 @@ void retrieveData()
             if ((mqtt_status_reads[l].regnum >= SOFAR2_BAT_BEGIN) && (mqtt_status_reads[l].regnum <= SOFAR2_BAT_END))  {
               if ((cached == 4) || (readBulkReg(SOFAR_SLAVE_ID, SOFAR2_BAT_BEGIN, SOFAR2_BAT_END - SOFAR2_BAT_BEGIN + 1, &rs) == 0) ) {
                 cached == 4;
-                addStateInfo(state, l, (mqtt_status_reads[l].regnum - SOFAR2_BAT_BEGIN) * 2, &rs);
+                if (mqtt_status_reads[l].regnum >= SOFAR2_REG_BATT2V) { //check with bat2 voltage if we have 2nd battery installed
+                  if (mqtt_status_reads[l].regnum == SOFAR2_REG_BATT2V) {
+                    uint16_t bat2vol = (uint16_t)((rs.data[(SOFAR2_REG_BATT2V - SOFAR2_BAT_BEGIN) * 2 ] << 8) | rs.data[(SOFAR2_REG_BATT2V - SOFAR2_BAT_BEGIN) * 2 + 1]);
+                    bat2vol > 0 ? battery2Installed = true : battery2Installed = false;
+                  }
+                  if (battery2Installed) {
+                    addStateInfo(state, l, (mqtt_status_reads[l].regnum - SOFAR2_BAT_BEGIN) * 2, &rs);
+                  }
+                }
+                else {
+                  addStateInfo(state, l, (mqtt_status_reads[l].regnum - SOFAR2_BAT_BEGIN) * 2, &rs);
+                }
               } else {
                 cached = 0;
               }
@@ -1041,19 +1135,15 @@ void mqttCallback(String topic, byte *message, unsigned int length)
   if (cmd == "modbus") {
 
     modbusResponse rs;
-    String retMsg;
-    if (sendModbus(message, length, &rs))
-      retMsg = rs.errorMessage;
-    else if (rs.dataSize != 2)
-      retMsg = "Reponse is " + String(rs.dataSize) + " bytes?";
-    else
-    {
-      retMsg = String((rs.data[0] << 8) | (rs.data[1] & 0xff));
+    sendModbus(message, length, &rs);
+    char buffer[256];
+    buffer[256] = '\0';
+    for (int j = 0; ((j < rs.frameSize)); j++) {
+      sprintf(&buffer[3 * j], "%02X ", rs.frame[j]);
     }
-
     String topic(deviceName);
     topic += "/response/modbus";
-    sendMqtt(const_cast<char*>(topic.c_str()), retMsg);
+    mqtt.publish(topic.c_str(), buffer);
     return;
   }
 
@@ -1153,7 +1243,7 @@ void mqttCallback(String topic, byte *message, unsigned int length)
     case HYDV2: {
         if (cmd == "standby") {
           sendPassiveCmdV2(SOFAR_SLAVE_ID, SOFAR2_REG_PASSIVECONTROL, 0, cmd);
-        } else if (cmd == "auto") {
+        } else if (cmd == "auto") { //there is no self use in passive mode on the HYDv2
         } else if ((cmd == "charge") || (cmd == "discharge")) {
           if (cmd == "discharge") {
             messageValue = messageValue * -1;
@@ -1202,7 +1292,7 @@ void mqttCallback(String topic, byte *message, unsigned int length)
 int peakShavingLimitImport = 0;
 int peakShavingLimitExport = 0;
 int peakShavingBatteryPower = 0;
-void peakShaving()
+void peakShaving() 
 {
   static unsigned long  lastRun = 0;
 
@@ -1216,7 +1306,7 @@ void peakShaving()
     if (readSingleReg(SOFAR_SLAVE_ID, SOFAR_REG_GRIDW, &rs) == 0) {
       gridPower = (int16_t)((rs.data[0] << 8) | rs.data[1]) * 10;
       if (gridPower < peakShavingLimitImport) {
-        peakShavingBatteryPower += (gridPower - peakShavingLimitImport);
+        peakShavingBatteryPower += (gridPower - peakShavingLimitImport); //gridpower import is negative, limit should also be stored as negative
       } else if (gridPower > peakShavingLimitExport) {
         peakShavingBatteryPower += (gridPower - peakShavingLimitExport);
       }
@@ -1232,6 +1322,41 @@ void peakShaving()
           peakShavingBatteryPower == (-1 * MAX_POWER);
         }
         sendPassiveCmd(SOFAR_SLAVE_ID, SOFAR_FN_DISCHARGE, (uint16_t)(peakShavingBatteryPower * -1), "discharge");
+      } else {
+        //standby
+        sendPassiveCmd(SOFAR_SLAVE_ID, SOFAR_FN_STANDBY, SOFAR_PARAM_STANDBY, "standby");
+      }
+    }
+  }
+}
+
+int selfuseBatteryPower = 0;
+void selfuseMode()
+{
+  static unsigned long  lastRun = 0;
+
+  if (checkTimer(&lastRun, SELFUSE_INTERVAL) && SELFUSEMODE)
+  {
+    modbusResponse  rs;
+
+    //Get grid power
+    int16_t  gridPower = 0;
+
+    if (readSingleReg(SOFAR_SLAVE_ID, SOFAR_REG_GRIDW, &rs) == 0) {
+      gridPower = (int16_t)((rs.data[0] << 8) | rs.data[1]) * 10;
+      selfuseBatteryPower += gridPower;  //gridPower negative is import, so selfuse should be calculated towards discharge (also negative)
+      if (selfuseBatteryPower > 0) {
+        //charge
+        if (selfuseBatteryPower > MAX_POWER) {
+          selfuseBatteryPower == MAX_POWER;
+        }
+        sendPassiveCmd(SOFAR_SLAVE_ID, SOFAR_FN_CHARGE, (uint16_t)peakShavingBatteryPower, "charge");
+      } else if (selfuseBatteryPower < 0) {
+        //discharge
+        if (selfuseBatteryPower < (-1 * MAX_POWER)) {
+          selfuseBatteryPower == (-1 * MAX_POWER);
+        }
+        sendPassiveCmd(SOFAR_SLAVE_ID, SOFAR_FN_DISCHARGE, (uint16_t)(selfuseBatteryPower * -1), "discharge");
       } else {
         //standby
         sendPassiveCmd(SOFAR_SLAVE_ID, SOFAR_FN_STANDBY, SOFAR_PARAM_STANDBY, "standby");
@@ -1309,7 +1434,7 @@ void flushRS485()
 {
   if (tftModel) {
     Serial.flush();
-    delay(200);
+    delay(20);
 
     while (Serial.available())
       Serial.read();
@@ -1345,9 +1470,7 @@ int sendModbus(uint8_t frame[], byte frameSize, modbusResponse *resp)
 // Listen for a response.
 int listen(modbusResponse *resp)
 {
-  uint8_t		inFrame[MAX_FRAME_SIZE];
   uint8_t		inByteNum = 0;
-  uint8_t		inFrameSize = 0;
   uint8_t		inFunctionCode = 0;
   uint8_t		inDataBytes = 0;
   int		done = 0;
@@ -1357,18 +1480,19 @@ int listen(modbusResponse *resp)
     resp = &dummy;      // Just in case we ever want to interpret here.
 
   resp->dataSize = 0;
+  resp->frameSize = 0;
   resp->errorLevel = 0;
 
-  while ((!done) && (inByteNum < sizeof(inFrame)))
+  while ((!done) && (inByteNum < MAX_FRAME_SIZE))
   {
     int tries = 0;
 
     if (tftModel) {
       while ((!Serial.available()) && (tries++ < RS485_TRIES))
-        delay(50);
+        delay(10);
     } else {
       while ((!RS485Serial.available()) && (tries++ < RS485_TRIES))
-        delay(50);
+        delay(10);
     }
 
     if (tries >= RS485_TRIES)
@@ -1377,27 +1501,29 @@ int listen(modbusResponse *resp)
     }
 
     if (tftModel) {
-      inFrame[inByteNum] = Serial.read();
+      resp->frame[inByteNum] = Serial.read();
     } else {
-      inFrame[inByteNum] = RS485Serial.read();
+      resp->frame[inByteNum] = RS485Serial.read();
     }
+
+    
 
     //Process the byte
     switch (inByteNum)
     {
       case 0:
-        if (inFrame[inByteNum] != SOFAR_SLAVE_ID)  //If we're looking for the first byte but it dosn't match the slave ID, we're just going to drop it.
+        if (resp->frame[inByteNum] != SOFAR_SLAVE_ID)  //If we're looking for the first byte but it dosn't match the slave ID, we're just going to drop it.
           inByteNum--;          // Will be incremented again at the end of the loop.
         break;
 
       case 1:
         //This is the second byte in a frame, where the function code lives.
-        inFunctionCode = inFrame[inByteNum];
+        inFunctionCode = resp->frame[inByteNum];
         break;
 
       case 2:
         //This is the third byte in a frame, which tells us the number of data bytes to follow.
-        if ((inDataBytes = inFrame[inByteNum]) > sizeof(inFrame))
+        if ((inDataBytes = resp->frame[inByteNum]) > MAX_FRAME_SIZE)
           inByteNum = -1;       // Frame is too big?
         break;
 
@@ -1405,7 +1531,7 @@ int listen(modbusResponse *resp)
         if (inByteNum < inDataBytes + 3)
         {
           //This is presumed to be a data byte.
-          resp->data[inByteNum - 3] = inFrame[inByteNum];
+          resp->data[inByteNum - 3] = resp->frame[inByteNum];
           resp->dataSize++;
         }
         else if (inByteNum > inDataBytes + 3)
@@ -1415,18 +1541,18 @@ int listen(modbusResponse *resp)
     inByteNum++;
   }
 
-  inFrameSize = inByteNum;
-
+  resp->frameSize = inByteNum;
+   
   /**
     Now check to see if the last two bytes are a valid CRC.
     If we don't have a response pointer we don't care.
   **/
-  if (inFrameSize < 5)
+  if (resp->frameSize < 5)
   {
     resp->errorLevel = 2;
     resp->errorMessage = "Response too short";
   }
-  else if (checkCRC(inFrame, inFrameSize))
+  else if (checkCRC(resp->frame, resp->frameSize))
   {
     resp->errorLevel = 0;
     resp->errorMessage = "Valid data frame";
@@ -1462,7 +1588,7 @@ int sendPassiveCmdV2(uint8_t id, uint16_t cmd, int32_t param, String pubTopic) {
     but 4487 isn't for forced passive mode. Set min and max to same value for that. Negative is discharging
   */
   modbusResponse  rs;
-  uint8_t frame[] = { id, MODBUS_FN_WRITEMULREG, (cmd >> 8) & 0xff, cmd & 0xff, 0, 6, 12, 0, 0, 0, 0, (param >> 24) & 0xff, (param >> 16) & 0xff, (param >> 8) & 0xff, param & 0xff, (param >> 25) & 0xff, (param >> 16) & 0xff, (param >> 8) & 0xff, param & 0xff, 0, 0 };
+  uint8_t frame[] = { id, MODBUS_FN_WRITEMULREG, (cmd >> 8) & 0xff, cmd & 0xff, 0, 6, 12, 0, 0, 0, 0, (param >> 24) & 0xff, (param >> 16) & 0xff, (param >> 8) & 0xff, param & 0xff, (param >> 24) & 0xff, (param >> 16) & 0xff, (param >> 8) & 0xff, param & 0xff, 0, 0 };
   int   err = -1;
   String    retMsg;
 
@@ -1712,6 +1838,11 @@ int16_t batteryWatts()
   if (!readSingleReg(SOFAR_SLAVE_ID, reg, &response))
   {
     int16_t  w = (int16_t)((response.data[0] << 8) | response.data[1]) * 10;
+    if (HYDV2) {
+      if (!readSingleReg((SOFAR_SLAVE_ID + 7), reg, &response)) { // for 2nd BAT
+        w += (int16_t)((response.data[0] << 8) | response.data[1]) * 10;
+      }
+    }
     return w;
   }
   return 0;
@@ -2127,6 +2258,7 @@ void loopRuns() {
   MDNS.update();
 #endif
   if (tftModel) tsLoop();
+  if (mqtt.connected()) mqtt.loop();
 }
 
 void loop()
