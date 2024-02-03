@@ -2,12 +2,14 @@
 const char* version = "v3.6";
 
 bool tftModel = true; //true means 2.8" color tft, false for oled version. This is always true for ESP32 devices as we don't use oled device for esp32.
+unsigned int tft_rotation = 2; // 0, 1, 2 or 3. Matches the touchscreen rotation
 
 bool calculated = true; //default to pre-calculated values before sending to mqtt
 
 unsigned int screenDimTimer = 30; //dim screen after 30 secs
 unsigned long lastScreenTouch = 0;
 
+#define ESP32 true
 
 #define ESP_DRD_USE_EEPROM true
 #include <ESP_DoubleResetDetector.h>
@@ -45,7 +47,8 @@ HTTPUpdateServer httpUpdater;
 
 #include <EEPROM.h>
 #define PORTAL_TIMEOUT 300 //reboots device if hotspot isn't configured after this time
-#define WIFI_TIMEOUT 60 //try this long to connect to existing wifi before going to hotspot portal mode
+#define WIFI_TIMEOUT 30 //try this long to connect to existing wifi before going to hotspot portal mode
+#define WIFI_RETRIES 6 // try again if fails for x times. Default 1.
 
 // * To be filled with EEPROM data
 char deviceName[64] = "Sofar";
@@ -695,6 +698,7 @@ void setup_wifi()
 
 
   wifiManager.setConnectTimeout(WIFI_TIMEOUT);
+  wifiManager.setConnectRetries(WIFI_RETRIES);
   //android fix, disable for now
   //wifiManager.setAPStaticIPConfig(IPAddress(8,8,8,8), IPAddress(8,8,8,8), IPAddress(255,255,255,0));
   if (!wifiManager.autoConnect("Sofar2Mqtt"))
@@ -2004,7 +2008,7 @@ void doubleResetDetect() {
   if (drd->detectDoubleReset()) {
     if (tftModel) {
       tft.begin();
-      tft.setRotation(2);
+      tft.setRotation(tft_rotation);
     }
     resetConfig();
   }
@@ -2027,7 +2031,7 @@ void setup()
   doubleResetDetect(); //detect factory reset first
   if (tftModel) {
     tft.begin();
-    tft.setRotation(2);
+    tft.setRotation(tft_rotation);
     analogWrite(TFT_LED, 32); //PWM on led pin to dim screen
     tft.fillScreen(ILI9341_CYAN);
     tft.fillScreen(ILI9341_BLACK);
@@ -2035,7 +2039,7 @@ void setup()
     tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK); // White on black
     tft.println("Sofar2mqtt starting...");
     ts.begin();
-    ts.setRotation(1);
+    ts.setRotation(tft_rotation);
 
   } else {
     //Turn on the OLED
