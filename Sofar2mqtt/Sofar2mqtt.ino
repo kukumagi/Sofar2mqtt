@@ -388,6 +388,10 @@ Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 #elif defined(ESP32)
 //make sure to change pins_arduino.h for your board to match MISO, MOSI, SCLK and CS for hardware SPI
 // eg: %userprofile%\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.0.0-alpha3\variants\esp32c3\pins_arduino.h
+// static const uint8_t SS = 1;
+// static const uint8_t MOSI = 7;
+// static const uint8_t MISO = 2;
+// static const uint8_t SCK = 6;
 #define TFT_CS    1
 #define TFT_DC    4
 #define TFT_LED   5
