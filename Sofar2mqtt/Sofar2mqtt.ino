@@ -9,8 +9,6 @@ bool calculated = true; //default to pre-calculated values before sending to mqt
 unsigned int screenDimTimer = 30; //dim screen after 30 secs
 unsigned long lastScreenTouch = 0;
 
-#define ESP32 true
-
 #define ESP_DRD_USE_EEPROM true
 #include <ESP_DoubleResetDetector.h>
 #define DRD_TIMEOUT 5
