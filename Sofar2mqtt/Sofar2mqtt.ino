@@ -2,7 +2,7 @@
 const char* version = "v3.6";
 
 bool tftModel = true; //true means 2.8" color tft, false for oled version. This is always true for ESP32 devices as we don't use oled device for esp32.
-unsigned int tft_rotation = 2; // 0, 1, 2 or 3. Matches the touchscreen rotation
+unsigned int tft_rotation = 0; // 0, 1, 2 or 3. Matches the touchscreen rotation
 
 bool calculated = true; //default to pre-calculated values before sending to mqtt
 
@@ -387,6 +387,7 @@ static struct mqtt_status_register  mqtt_status_reads[] =
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC);
 #elif defined(ESP32)
 //make sure to change pins_arduino.h for your board to match MISO, MOSI, SCLK and CS for hardware SPI
+// eg: %userprofile%\AppData\Local\Arduino15\packages\esp32\hardware\esp32\3.0.0-alpha3\variants\esp32c3\pins_arduino.h
 #define TFT_CS    1
 #define TFT_DC    4
 #define TFT_LED   5
