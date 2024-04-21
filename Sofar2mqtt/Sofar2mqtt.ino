@@ -1,5 +1,15 @@
 // The device name is used as the MQTT base topic. If you need more than one Sofar2mqtt on your network, give them unique names.
-const char* version = "v3.7b";
+const char* version = "v3.7b_test";
+
+// In %HOMEPATH%/.platformio\packages\framework-arduinoespressif32\variants\esp32c3\pins_arduino.h
+// requires arduino pinouts for original Sofar2mqtt board. change or add pins_arduino.h to 
+/*
+static const uint8_t SS = 1;
+static const uint8_t MOSI = 7;
+static const uint8_t MISO = 2;
+static const uint8_t SCK = 6;
+*/
+//
 
 bool tftModel = true; //true means 2.8" color tft, false for oled version. This is always true for ESP32 devices as we don't use oled device for esp32.
 
@@ -959,12 +969,12 @@ void addStateInfo(String &state, unsigned int index, unsigned int dataindex, mod
     sendMqtt(const_cast<char*>(topic.c_str()), stringVal);
   }
 
-  if ((mqtt_status_reads[index].mqtt_name == "batterySOC") && (tftModel) && (invertermodel != HYDV2)) {
+  if ((mqtt_status_reads[index].mqtt_name == "batterySOC") && (tftModel) && (inverterModel != HYDV2)) {
     tft.setTextSize(2);
     tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
     drawCentreString("SOC: " + stringVal + "%", 120, 70);
   }
-  if ((mqtt_status_reads[index].mqtt_name == "battery_avg_SOC") && (tftModel) && (invertermodel == HYDV2)) {
+  if ((mqtt_status_reads[index].mqtt_name == "battery_avg_SOC") && (tftModel) && (inverterModel == HYDV2)) {
     tft.setTextSize(2);
     tft.setTextColor(ILI9341_WHITE, ILI9341_BLACK);
     drawCentreString("SOC: " + stringVal + "%", 120, 70);
