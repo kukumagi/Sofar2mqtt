@@ -46,6 +46,8 @@ HTTPUpdateServer httpUpdater;
 #include <EEPROM.h>
 #define PORTAL_TIMEOUT 300 //reboots device if hotspot isn't configured after this time
 #define WIFI_TIMEOUT 60 //try this long to connect to existing wifi before going to hotspot portal mode
+#define WIFI_DISCONNECTED_TIMEOUT_MILLIS 30000 //reboots device if wifi is inactive for this time
+unsigned long wifi_last_connected_millis = 0;
 
 // * To be filled with EEPROM data
 char deviceName[65] = "Sofar";
@@ -822,7 +824,7 @@ void setup_wifi()
   } else {
     updateOLED("NULL", "NULL", "WiFi...", "NULL");
   }
-  delay(500);
+  delay(1000);
 
 }
 
@@ -1125,6 +1127,22 @@ void retrieveData()
   }
 }
 
+String setInverterMode(int16_t data){
+  modbusResponse  rs;
+  uint16_t addr = 0x1110;
+  uint8_t frame[] = { SOFAR_SLAVE_ID, MODBUS_FN_WRITEMULREG, (addr >> 8) & 0xff, addr & 0xff, 0, 1, 2, 0, data, 0, 0};
+  String retMsg;
+  if (sendModbus(frame, sizeof(frame), &rs))
+    retMsg = rs.errorMessage;
+  else if (rs.dataSize != 2)
+    retMsg = "Reponse is " + String(rs.dataSize) + " bytes?";
+  else
+  {
+    retMsg = String((rs.data[0] << 8) | (rs.data[1] & 0xff));
+  }
+  return retMsg;
+}
+
 // This function is executed when an MQTT message arrives on a topic that we are subscribed to.
 void mqttCallback(String topic, byte *message, unsigned int length)
 {
@@ -1157,19 +1175,7 @@ void mqttCallback(String topic, byte *message, unsigned int length)
 
   if (cmd == "mode_control") { //only for HYDV2
     if (inverterModel == HYDV2) {
-      modbusResponse  rs;
-      int16_t data = messageTemp.toInt();
-      uint16_t addr = 0x1110;
-      uint8_t frame[] = { SOFAR_SLAVE_ID, MODBUS_FN_WRITEMULREG, (addr >> 8) & 0xff, addr & 0xff, 0, 1, 2, 0, data, 0, 0};
-      String retMsg;
-      if (sendModbus(frame, sizeof(frame), &rs))
-        retMsg = rs.errorMessage;
-      else if (rs.dataSize != 2)
-        retMsg = "Reponse is " + String(rs.dataSize) + " bytes?";
-      else
-      {
-        retMsg = String((rs.data[0] << 8) | (rs.data[1] & 0xff));
-      }
+      String retMsg = setInverterMode(messageTemp.toInt());
 
       String topic(deviceName);
       topic += "/response/mode_control";
@@ -2098,7 +2104,20 @@ void handleCommand() {
   }
 }
 
+void handleSetInverterMode() {
+  int num = httpServer.args();
+  String message = "";
+  for (int i = 0 ; i < num ; i++) {
+     if (httpServer.argName(i) == "mode") {
+      String value =  httpServer.arg(i);
+      message += "Setting mode to: " + value + "<br>";
+      message += setInverterMode(value.toInt());
+    } 
+  }
 
+  httpServer.send(200, "text/html", "<html><head><meta http-equiv=\"refresh\" content=\"5; URL=/\" /></head><body>" + message + "</body></html>");
+
+}
 
 void resetConfig() {
   //initiate debug led indication for factory reset
@@ -2261,6 +2280,7 @@ void setup()
   httpServer.on("/json", handleJson);
   httpServer.on("/jsonsettings", handleJsonSettings);
   httpServer.on("/command", handleCommand);
+  httpServer.on("/setInverterMode", handleSetInverterMode);
 
   if (tftModel) {
     tft.fillScreen(ILI9341_BLACK);
@@ -2306,6 +2326,25 @@ void loopRuns() {
   if (mqtt.connected()) mqtt.loop();
 }
 
+void checkWifi() {
+  unsigned long currentMillis = millis();
+  if(WiFi.isConnected()){
+    tft.fillCircle(160, 290, 10, ILI9341_RED);
+    wifi_last_connected_millis = currentMillis;
+  } else {
+    tft.fillCircle(160, 290, 10, ILI9341_GREEN);
+    if(currentMillis - wifi_last_connected_millis >= WIFI_DISCONNECTED_TIMEOUT_MILLIS) {
+      // Reboot ESP if mqtt down for certain time
+      #if defined(ESP8266)
+        ESP.reset();
+      #elif defined(ESP32)
+        ESP.restart();
+      #endif
+    }
+  }
+
+}
+
 void loop()
 {
   loopRuns();
@@ -2324,6 +2363,8 @@ void loop()
 
   //Get all data and send to MQTT
   retrieveData();
+
+  checkWifi();
 
   //Set battery save state
   if (!modbusError) batterySave();
